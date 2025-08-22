@@ -5,6 +5,7 @@ use crate::{AgentServer, AgentServerCommand};
 use acp_thread::{AgentConnection, LoadError};
 use anyhow::Result;
 use gpui::{Entity, Task};
+use language_models::provider::google::GoogleLanguageModelProvider;
 use project::Project;
 use settings::SettingsStore;
 use ui::App;
@@ -18,11 +19,11 @@ const ACP_ARG: &str = "--experimental-acp";
 
 impl AgentServer for Gemini {
     fn name(&self) -> &'static str {
-        "Gemini"
+        "Gemini CLI"
     }
 
     fn empty_state_headline(&self) -> &'static str {
-        "Welcome to Gemini"
+        "Welcome to Gemini CLI"
     }
 
     fn empty_state_message(&self) -> &'static str {
@@ -47,15 +48,19 @@ impl AgentServer for Gemini {
                 settings.get::<AllAgentServersSettings>(None).gemini.clone()
             })?;
 
-            let Some(command) =
+            let Some(mut command) =
                 AgentServerCommand::resolve("gemini", &[ACP_ARG], None, settings, &project, cx).await
             else {
                 return Err(LoadError::NotInstalled {
                     error_message: "Failed to find Gemini CLI binary".into(),
                     install_message: "Install Gemini CLI".into(),
-                    install_command: "npm install -g @google/gemini-cli@latest".into()
+                    install_command: "npm install -g @google/gemini-cli@preview".into()
                 }.into());
             };
+
+            if let Some(api_key)= cx.update(GoogleLanguageModelProvider::api_key)?.await.ok() {
+                command.env.get_or_insert_default().insert("GEMINI_API_KEY".to_owned(), api_key.key);
+            }
 
             let result = crate::acp::connect(server_name, command.clone(), &root_dir, cx).await;
             if result.is_err() {

@@ -171,9 +171,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.0.26"
+version = "0.0.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "160971bb53ca0b2e70ebc857c21e24eb448745f1396371015f4c59e9a9e51ed0"
+checksum = "89a2cd7e0bd2bb7ed27687cfcf6561b91542c1ce23e52fd54ee59b7568c9bd84"
 dependencies = [
  "anyhow",
  "futures 0.3.31",
@@ -239,6 +239,7 @@ dependencies = [
  "smol",
  "sqlez",
  "task",
+ "telemetry",
  "tempfile",
  "terminal",
  "text",
@@ -20403,7 +20404,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "0.201.0"
+version = "0.202.0"
 dependencies = [
  "activity_indicator",
  "agent",
