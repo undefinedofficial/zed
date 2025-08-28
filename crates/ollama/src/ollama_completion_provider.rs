@@ -12,6 +12,9 @@ use settings::SettingsStore;
 use project::Project;
 
 pub const OLLAMA_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(75);
+const OLLAMA_EDIT_PREDICTION_LENGTH: i32 = 150;
+const OLLAMA_EDIT_PREDICTION_TEMP: f32 = 0.1;
+const OLLAMA_EDIT_PREDICTION_TOP_P: f32 = 0.95;
 
 // Structure for passing settings model data without circular dependencies
 #[derive(Clone, Debug)]
@@ -371,9 +374,9 @@ impl EditPredictionProvider for OllamaCompletionProvider {
                 suffix: Some(suffix),
                 stream: false,
                 options: Some(GenerateOptions {
-                    num_predict: Some(150), // Reasonable completion length
-                    temperature: Some(0.1), // Low temperature for more deterministic results
-                    top_p: Some(0.95),
+                    num_predict: Some(OLLAMA_EDIT_PREDICTION_LENGTH), // Reasonable completion length
+                    temperature: Some(OLLAMA_EDIT_PREDICTION_TEMP), // Low temperature for more deterministic results
+                    top_p: Some(OLLAMA_EDIT_PREDICTION_TOP_P),
                     stop: stop_tokens,
                 }),
                 keep_alive: None,
@@ -1255,6 +1258,153 @@ mod tests {
         assert!(
             !requests.is_empty(),
             "Expected new requests after API key update"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_ollama_debouncing(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        // Create a buffer with realistic code content
+        let buffer = cx.update(|cx| cx.new(|cx| Buffer::local("fn test() {\n    \n}", cx)));
+        let cursor_position = buffer.read_with(cx, |buffer, _| {
+            buffer.anchor_before(11) // Position in the middle of the function
+        });
+
+        // Setup provider state
+        let fake_http_client = Arc::new(crate::fake::FakeHttpClient::new());
+        fake_http_client.set_generate_response("println!(\"Hello\");");
+
+        let service = cx.update(|cx| {
+            State::new(
+                fake_http_client.clone(),
+                "http://localhost:11434".to_string(),
+                None,
+                cx,
+            )
+        });
+
+        cx.update(|cx| {
+            State::set_global(service.clone(), cx);
+        });
+
+        // Wait for any initial model discovery requests to complete
+        cx.background_executor.run_until_parked();
+
+        let provider = cx.update(|cx| {
+            cx.new(|cx| OllamaCompletionProvider::new("qwen2.5-coder:3b".to_string(), None, cx))
+        });
+
+        // Clear any initial requests (including model discovery)
+        fake_http_client.clear_requests();
+
+        // Simulate rapid typing - trigger refresh multiple times with debounce=true
+        provider.update(cx, |provider, cx| {
+            provider.refresh(None, buffer.clone(), cursor_position, true, cx);
+        });
+
+        provider.update(cx, |provider, cx| {
+            provider.refresh(None, buffer.clone(), cursor_position, true, cx);
+        });
+
+        provider.update(cx, |provider, cx| {
+            provider.refresh(None, buffer.clone(), cursor_position, true, cx);
+        });
+
+        // At this point, no requests should have been made due to debouncing
+        let requests_before_timeout = fake_http_client.get_requests();
+        assert_eq!(
+            requests_before_timeout.len(),
+            0,
+            "Expected no requests before debounce timeout expires"
+        );
+
+        // Advance clock by the debounce timeout
+        cx.background_executor
+            .advance_clock(OLLAMA_DEBOUNCE_TIMEOUT);
+        cx.background_executor.run_until_parked();
+
+        // Now exactly one request should have been made (the last one)
+        let requests_after_timeout = fake_http_client.get_requests();
+        assert_eq!(
+            requests_after_timeout.len(),
+            1,
+            "Expected exactly 1 request after debounce timeout, got {}",
+            requests_after_timeout.len()
+        );
+
+        // Verify provider is no longer refreshing
+        provider.read_with(cx, |provider, _cx| {
+            assert!(
+                !provider.is_refreshing(),
+                "Provider should not be refreshing after completion"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_ollama_debouncing_slow_typing(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        // Create a buffer with realistic code content
+        let buffer = cx.update(|cx| cx.new(|cx| Buffer::local("fn test() {\n    let x = \n}", cx)));
+        let cursor_position = buffer.read_with(cx, |buffer, _| {
+            buffer.anchor_before(21) // Position after "let x = "
+        });
+
+        // Create fake HTTP client and set up global service
+        let fake_http_client = Arc::new(crate::fake::FakeHttpClient::new());
+        fake_http_client.set_generate_response("42");
+
+        // Create global Ollama service
+        let service = cx.update(|cx| {
+            State::new(
+                fake_http_client.clone(),
+                "http://localhost:11434".to_string(),
+                None,
+                cx,
+            )
+        });
+
+        cx.update(|cx| {
+            State::set_global(service.clone(), cx);
+        });
+
+        // Wait for any initial model discovery requests to complete
+        cx.background_executor.run_until_parked();
+
+        // Create provider
+        let provider = cx.update(|cx| {
+            cx.new(|cx| OllamaCompletionProvider::new("qwen2.5-coder:3b".to_string(), None, cx))
+        });
+
+        // Clear any initial requests (including model discovery)
+        fake_http_client.clear_requests();
+
+        // Simulate slow typing - 200ms between keystrokes (realistic typing speed)
+        // Each keystroke should trigger its own API request because 200ms > 75ms debounce
+        for _i in 0..3 {
+            provider.update(cx, |provider, cx| {
+                provider.refresh(None, buffer.clone(), cursor_position, true, cx);
+            });
+
+            // Wait for debounce timeout to expire + a bit more
+            cx.background_executor
+                .advance_clock(OLLAMA_DEBOUNCE_TIMEOUT + Duration::from_millis(10));
+            cx.background_executor.run_until_parked();
+
+            // Simulate realistic typing delay (200ms between keystrokes)
+            cx.background_executor
+                .advance_clock(Duration::from_millis(200 - 75 - 10));
+        }
+
+        // With slow typing, we should get 3 separate API requests (one per "keystroke")
+        let requests = fake_http_client.get_requests();
+        assert_eq!(
+            requests.len(),
+            3,
+            "Expected 3 requests for slow typing (200ms intervals), got {}. This demonstrates that 75ms debounce is too short for normal typing speeds.",
+            requests.len()
         );
     }
 }
