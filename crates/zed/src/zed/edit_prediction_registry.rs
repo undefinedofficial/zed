@@ -6,13 +6,12 @@ use gpui::{AnyWindowHandle, App, AppContext as _, Context, Entity, WeakEntity};
 
 use language::language_settings::{EditPredictionProvider, all_language_settings};
 use language_models::AllLanguageModelSettings;
-use ollama::{OllamaCompletionProvider, OllamaService, SettingsModel};
+use ollama::{OLLAMA_API_KEY_VAR, OllamaCompletionProvider, SettingsModel, State};
 use settings::{Settings as _, SettingsStore};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use supermaven::{Supermaven, SupermavenCompletionProvider};
 use ui::Window;
 use workspace::Workspace;
-use zed_actions;
 use zeta::{ProviderDataCollection, ZetaEditPredictionProvider};
 
 pub fn init(client: Arc<Client>, user_store: Entity<UserStore>, cx: &mut App) {
@@ -35,13 +34,13 @@ pub fn init(client: Arc<Client>, user_store: Entity<UserStore>, cx: &mut App) {
         (api_url, settings_models)
     };
 
-    let ollama_service = OllamaService::new(client.http_client(), api_url, None, cx);
+    let ollama_service = State::new(client.http_client(), api_url, None, cx);
 
     ollama_service.update(cx, |service, cx| {
         service.set_settings_models(settings_models, cx);
     });
 
-    OllamaService::set_global(ollama_service, cx);
+    State::set_global(ollama_service, cx);
 
     let editors: Rc<RefCell<HashMap<WeakEntity<Editor>, AnyWindowHandle>>> = Rc::default();
     cx.observe_new({
@@ -106,13 +105,10 @@ pub fn init(client: Arc<Client>, user_store: Entity<UserStore>, cx: &mut App) {
             let new_provider = all_language_settings(None, cx).edit_predictions.provider;
 
             if new_provider != provider {
-                let tos_accepted = user_store.read(cx).has_accepted_terms_of_service();
-
                 telemetry::event!(
                     "Edit Prediction Provider Changed",
                     from = provider,
                     to = new_provider,
-                    zed_ai_tos_accepted = tos_accepted,
                 );
 
                 provider = new_provider;
@@ -123,33 +119,10 @@ pub fn init(client: Arc<Client>, user_store: Entity<UserStore>, cx: &mut App) {
                     user_store.clone(),
                     cx,
                 );
-
-                if !tos_accepted {
-                    match provider {
-                        EditPredictionProvider::Zed => {
-                            let Some(window) = cx.active_window() else {
-                                return;
-                            };
-
-                            window
-                                .update(cx, |_, window, cx| {
-                                    window.dispatch_action(
-                                        Box::new(zed_actions::OpenZedPredictOnboarding),
-                                        cx,
-                                    );
-                                })
-                                .ok();
-                        }
-                        EditPredictionProvider::None
-                        | EditPredictionProvider::Copilot
-                        | EditPredictionProvider::Supermaven
-                        | EditPredictionProvider::Ollama => {}
-                    }
-                }
             } else if provider == EditPredictionProvider::Ollama {
                 // Update global Ollama service when settings change
                 let settings = &AllLanguageModelSettings::get_global(cx).ollama;
-                if let Some(service) = OllamaService::global(cx) {
+                if let Some(service) = State::global(cx) {
                     let settings_models: Vec<SettingsModel> = settings
                         .available_models
                         .iter()
@@ -309,12 +282,12 @@ fn assign_edit_prediction_provider(
         }
         EditPredictionProvider::Ollama => {
             let settings = &AllLanguageModelSettings::get_global(cx).ollama;
-            let api_key = std::env::var("OLLAMA_API_KEY").ok();
+            let api_key = std::env::var(OLLAMA_API_KEY_VAR).ok();
 
             // Get model from settings or use discovered models
             let model = if let Some(first_model) = settings.available_models.first() {
                 Some(first_model.name.clone())
-            } else if let Some(service) = OllamaService::global(cx) {
+            } else if let Some(service) = State::global(cx) {
                 // Use first discovered model
                 service
                     .read(cx)

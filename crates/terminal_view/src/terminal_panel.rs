@@ -481,14 +481,28 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<WeakEntity<Terminal>>> {
-        let Ok(is_local) = self
+        let remote_client = self
             .workspace
-            .update(cx, |workspace, cx| workspace.project().read(cx).is_local())
-        else {
-            return Task::ready(Err(anyhow!("Project is not local")));
+            .update(cx, |workspace, cx| {
+                let project = workspace.project().read(cx);
+                if project.is_via_collab() {
+                    Err(anyhow!("cannot spawn tasks as a guest"))
+                } else {
+                    Ok(project.remote_client())
+                }
+            })
+            .flatten();
+
+        let remote_client = match remote_client {
+            Ok(remote_client) => remote_client,
+            Err(e) => return Task::ready(Err(e)),
         };
 
-        let builder = ShellBuilder::new(is_local, &task.shell);
+        let remote_shell = remote_client
+            .as_ref()
+            .and_then(|remote_client| remote_client.read(cx).shell());
+
+        let builder = ShellBuilder::new(remote_shell.as_deref(), &task.shell);
         let command_label = builder.command_label(&task.command_label);
         let (command, args) = builder.build(task.command.clone(), &task.args);
 
