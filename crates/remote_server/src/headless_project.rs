@@ -32,6 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicUsize},
 };
+use sysinfo::System;
 use util::ResultExt;
 use worktree::Worktree;
 
@@ -67,7 +68,7 @@ impl HeadlessProject {
         settings::init(cx);
         language::init(cx);
         project::Project::init_settings(cx);
-        log_store::init(false, cx);
+        log_store::init(true, cx);
     }
 
     pub fn new(
@@ -230,6 +231,7 @@ impl HeadlessProject {
         session.add_request_handler(cx.weak_entity(), Self::handle_get_path_metadata);
         session.add_request_handler(cx.weak_entity(), Self::handle_shutdown_remote_server);
         session.add_request_handler(cx.weak_entity(), Self::handle_ping);
+        session.add_request_handler(cx.weak_entity(), Self::handle_get_processes);
 
         session.add_entity_request_handler(Self::handle_add_worktree);
         session.add_request_handler(cx.weak_entity(), Self::handle_remove_worktree);
@@ -546,7 +548,9 @@ impl HeadlessProject {
             .context("lsp logs store is missing")?;
 
         lsp_logs.update(&mut cx, |lsp_logs, _| {
-            // we do not support any other log toggling yet
+            // RPC logs are very noisy and we need to toggle it on the headless server too.
+            // The rest of the logs for the ssh project are very important to have toggled always,
+            // to e.g. send language server error logs to the client before anything is toggled.
             if envelope.payload.enabled {
                 lsp_logs.enable_rpc_trace_for_language_server(server_id);
             } else {
@@ -716,6 +720,34 @@ impl HeadlessProject {
     ) -> Result<proto::Ack> {
         log::debug!("Received ping from client");
         Ok(proto::Ack {})
+    }
+
+    async fn handle_get_processes(
+        _this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::GetProcesses>,
+        _cx: AsyncApp,
+    ) -> Result<proto::GetProcessesResponse> {
+        let mut processes = Vec::new();
+        let system = System::new_all();
+
+        for (_pid, process) in system.processes() {
+            let name = process.name().to_string_lossy().into_owned();
+            let command = process
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+
+            processes.push(proto::ProcessInfo {
+                pid: process.pid().as_u32(),
+                name,
+                command,
+            });
+        }
+
+        processes.sort_by_key(|p| p.name.clone());
+
+        Ok(proto::GetProcessesResponse { processes })
     }
 }
 
