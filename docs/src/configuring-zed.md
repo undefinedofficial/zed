@@ -2023,6 +2023,9 @@ To interpret all `.c` files as C++, files called `MyLockFile` as TOML and files 
     "inline_blame": {
       "enabled": true
     },
+    "branch_picker": {
+      "show_author_name": true
+    },
     "hunk_style": "staged_hollow"
   }
 }
@@ -2149,6 +2152,36 @@ Example:
   "git": {
     "inline_blame": {
       "padding": 10
+    }
+  }
+}
+```
+
+### Branch Picker
+
+- Description: Configuration related to the branch picker.
+- Setting: `branch_picker`
+- Default:
+
+```json
+{
+  "git": {
+    "branch_picker": {
+      "show_author_name": false
+    }
+  }
+}
+```
+
+**Options**
+
+1. Show the author name in the branch picker:
+
+```json
+{
+  "git": {
+    "branch_picker": {
+      "show_author_name": true
     }
   }
 }
@@ -3594,7 +3627,7 @@ List of `integer` column numbers
 
 ### Terminal: Cursor Shape
 
-- Description: Whether or not selecting text in the terminal will automatically copy to the system clipboard.
+- Description: Controls the visual shape of the cursor in the terminal. When not explicitly set, it defaults to a block shape.
 - Setting: `cursor_shape`
 - Default: `null` (defaults to block)
 
